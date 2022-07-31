@@ -1,0 +1,57 @@
+default:
+  interruptible: false
+
+.install_openssh: &install_openssh
+  - apt-get update && apt-get install openssh-server sudo -y
+  - service ssh start
+
+stages:
+  - "test"
+  - "push"
+  - "deploy"
+
+cache:
+  paths:
+    - node_modules/
+
+variables: 
+  DOCKER_VERSION: 20.10.16
+  IMAGE_NAME: "welbex-task"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+
+test:
+  image: node:16-alpine
+  stage: test
+  script:
+    - npm i
+    - npm run test
+
+push: 
+  image: docker:$DOCKER_VERSION
+  services:
+    - docker:$DOCKER_VERSION-dind
+  variables: 
+    DOCKER_TLS_CERTDIR: ""
+  stage: push
+  before_script:
+    - docker login -u $REGISTRY_USER -p $REGISTRY_PASSWORD
+  script:
+    - docker build -t $REGISTRY_USER/$IMAGE_NAME:$IMAGE_TAG .
+    - docker push $REGISTRY_USER/$IMAGE_NAME:$IMAGE_TAG
+
+deploy:
+  image: ubuntu:20.04
+  stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+    - if: $CI_COMMIT_BRANCH != "main"
+      when: never
+  before_script:
+    - chmod 400 $SSH_KEY
+    - *install_openssh
+  script:
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY $YC_CM_USER@$YC_CM_IPV4 << EOF " 
+      sudo docker login -u $REGISTRY_USER -p $REGISTRY_PASSWORD 
+      sudo docker stop welbexserver && docker rm welbexserver || true
+      sudo docker run --name "welbexserver" -d -p 80:80 $REGISTRY_USER/$IMAGE_NAME:$IMAGE_TAG" EOF
